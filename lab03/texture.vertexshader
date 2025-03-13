@@ -1,0 +1,257 @@
+#version 330 core
+#define n 300
+#define pi 3.1415926535897932384626433832795
+#define g 9.806650
+
+layout(location = 0) in vec3 vertexPosition_modelspace;
+layout(location = 1) in vec2 vertexUV;
+
+struct Light {
+    vec4 La;
+    vec4 Ld;
+    vec4 Ls;
+    vec3 lightPosition_worldspace;
+    float power;
+};
+uniform Light light;
+
+struct Wave {
+    vec2 direction;
+    float steepness;
+    float wavelength;
+    float speed;
+    float amplitude;
+};
+
+// Output data ; will be interpolated for each fragment.
+out vec4 vertex_position_cameraspace;
+out vec4 vertex_normal_cameraspace;
+out vec4 light_position_cameraspace;
+out vec2 vertex_UV;
+out vec4 vertex_position_lightspace;
+out float vertexSteepness; 
+out float foamFactor; 
+out float roughnessFactor;  // Roughness based on wave steepness and height
+out float waveHeight;       // Output the calculated wave height to the fragment shader
+out vec3 vertexNormal;
+
+// Model, view, projection matrices
+uniform mat4 M;
+uniform mat4 V;
+uniform mat4 P;
+uniform mat4 lightVP;
+
+uniform float waveTime;
+uniform Wave[n] waves;
+
+//One Sine and two sine
+//const float waveAmplitude = 1;
+const float freq1 = 0.3;
+const float freq2 = 0.5;
+const float w = 15;
+
+const float waveAmplitude = 1.5;  // Increase wave amplitude to exaggerate wave heights
+const float fbmFactor = 0.8;
+
+vec3 tangent = vec3(0,0,1);
+vec3 binormal = vec3(1,0,0);
+
+float rand(vec2 co) {
+    return fract(sin(dot(co.xy ,vec2(12.9898, 78.233))) * 43758.5453);
+}
+
+
+vec3 GerstnerWave(Wave wave, vec4 pos, int waveIndex) {
+    float waveLength = wave.wavelength / 100;
+    float k = 2 * pi / waveLength;
+    vec2 d = normalize(wave.direction);
+    float w = sqrt(g * k);
+
+    // Introduce random phase offset to avoid perfect interference
+    float randomPhaseOffset = rand(vec2(pos.xz) * waveIndex) * 0.1;  // Small random offset (can be tuned)
+    float phase = k * dot(d, pos.xz) - wave.speed * w * waveTime + randomPhaseOffset;
+
+    //float phase = k * dot(d, pos.xz) - wave.speed * w * waveTime;
+    float Q = min(wave.steepness / k, 1.0);  
+    float A = wave.amplitude;  // Amplify the wave height with waveAmplitude
+
+    vec3 newPos;
+    newPos.x = -d.x * (A * Q * sin(phase));
+    newPos.y = A * cos(phase);
+    newPos.z = -d.y * (A * Q * sin(phase));
+
+    // Tangent and binormal accumulation
+    tangent += vec3(
+        1.0 - d.x * A * Q * k * cos(phase),  // Tangent in x
+        -d.x * A * k * sin(phase),           // Tangent in y
+        -d.x * d.y * A * Q * k * cos(phase)  // Tangent in z
+    );
+
+    binormal += vec3(
+        -d.x * d.y * A * Q * k * cos(phase),  // Binormal in x
+        -d.y * A * k * sin(phase),            // Binormal in y
+        1.0 - d.y * A * Q * k * cos(phase)    // Binormal in z
+    );
+
+
+    return newPos;
+}
+
+float hash(vec2 p) {
+    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+}
+
+float noise(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    
+    float a = hash(i);
+    float b = hash(i + vec2(1.0, 0.0));
+    float c = hash(i + vec2(0.0, 1.0));
+    float d = hash(i + vec2(1.0, 1.0));
+    
+    vec2 u = f * f * (3.0 - 2.0 * f);
+    
+    return mix(a, b, u.x) + (c - a) * u.y * (1.0 - u.x) + (d - b) * u.x * u.y;
+}
+
+float fbm(vec2 p) {
+    float value = 0.0;
+    float amplitude = 0.15;
+    float frequency = 2.0;
+    for (int i = 0; i < 12; i++) {
+        value += amplitude * noise(p * frequency);
+        frequency *= 2.0;
+        amplitude *= 0.5;
+    }
+    return value;
+}
+
+vec3 gerstner_wave_normal(vec3 position, float time) {
+    vec3 wave_normal = vec3(0.0, 1.0, 0.0);
+    for (int i = 0; i < n; i++) {
+        Wave wave = waves[i];
+        vec2 d = normalize(wave.direction);
+        // Match waveLength usage from GerstnerWave
+        float k = 2.0 * pi / wave.wavelength;
+        float w = sqrt(g * k);
+        float phase = k * dot(d, position.xz) - wave.speed * w * time;
+
+        // Wave amplitude factor (Q)
+        float Q = min(wave.steepness / k, 1.0);
+        float Af = wave.amplitude * k;
+
+        // Calculate wave influence on the normal
+        wave_normal.y -= wave.steepness * Af * sin(phase);
+
+        float omega = Af * cos(phase);
+        wave_normal.x -= d.x * omega;
+        wave_normal.z -= d.y * omega;
+    }
+    return normalize(wave_normal);
+}
+
+
+vec3 gerstner_wave_position(vec2 position, float time) {
+    vec3 wave_position = vec3(position.x, 0.0, position.y);
+    for (int i = 0; i < n; i++) {
+        Wave wave = waves[i];
+        vec2 d = normalize(wave.direction);
+        // Match waveLength usage from GerstnerWave
+        float k = 2.0 * pi / wave.wavelength;
+        float w = sqrt(g * k);
+        float phase = k * dot(d, position) - wave.speed * w * time;
+
+        // Wave amplitude factor (Q)
+        float Q = min(wave.steepness / k, 1.0);
+        float A = wave.amplitude;
+
+        // Apply height displacement
+        wave_position.y += A * cos(phase);
+
+        // Horizontal displacement based on steepness
+        float width = A * Q * sin(phase);
+        wave_position.x += d.x * width;
+        wave_position.z += d.y * width;
+    }
+    return wave_position;
+}
+
+void main() {
+    vec4 pos = vec4(vertexPosition_modelspace, 1.0);
+    tangent = vec3(0);
+    binormal = vec3(0);
+
+    //One Sine Wave
+    
+    //pos.y = waveAmplitude * sin(freq1 * pos.z - w * waveTime);
+
+//    //Two Sine Waves
+//    float wave1 = waveAmplitude * sin(freq1 * pos.z - w * waveTime);
+//    float wave2 = waveAmplitude * sin(-freq2 * pos.z - w/2 * waveTime);
+//    pos.y = (wave1 + wave2)/2;  // Sum of two sine waves
+    
+//    Wave wave1 = waves[0];
+//    Wave wave2 = waves[1];
+//    Wave wave3 = waves[2];
+//    vec3 gwave1 = GerstnerWave(wave1,pos);
+//    vec3 gwave2 = GerstnerWave(wave2,pos);
+//    vec3 gwave3 = GerstnerWave(wave3,pos);
+//    pos.xyz += gwave1;
+//    pos.xyz += gwave2;
+//    pos.xyz += gwave3;
+//    
+    float combinedDisplacement = 0.0;
+    float totalWaveHeight = 0.0;
+    
+//    // Apply Gerstner waves
+//    for (int i = 0; i < n; i++) {
+//        vec3 gwave = GerstnerWave(waves[i], pos,i);
+//        combinedDisplacement += length(gwave);
+//        totalWaveHeight += gwave.y; // Track total height of waves for fragment shader
+//        pos.xyz += gwave;
+//    }
+//
+    
+    // Compute wave position
+    vec3 wave_position = gerstner_wave_position(pos.xz, waveTime);
+    pos.xyz += wave_position;
+    
+    // Compute wave normal
+    vec3 normal = gerstner_wave_normal(wave_position, waveTime);
+    vertexNormal = normal;
+
+//     //Add FBM for fine surface details
+//    float fbmValue1 = fbm(pos.xz );
+////    float fbmValue2 = fbm(pos.xz *0.05);
+//    pos.y += (fbmValue1 * fbmFactor) ;  // Amplify noise and adjust Y-position
+    
+    // Foam based on wave height
+    float heightFactor = clamp((0.05 - pos.y) * 20.0, 0.0, 1.0);
+    foamFactor = heightFactor;
+
+    // Roughness based on steepness
+    roughnessFactor = clamp(combinedDisplacement * 0.05, 0.1, 1.0);  // A higher steepness increases roughness
+
+    // Pass the calculated wave height to the fragment shader
+    waveHeight = pos.y;
+
+    //vec3 normal = normalize(cross(binormal, tangent));
+
+    float Nx = normal.x;
+    float Ny = normal.y;
+    float Nz = normal.z;
+    
+    if (Ny == 0.0) {
+        vertexSteepness = 9999.0;  // Vertical surface case
+    } else {
+        vertexSteepness = length(vec2(Nx, Nz)) / abs(Ny);
+    }
+
+    gl_Position = P * V * M * pos;
+    vertex_position_cameraspace = V * M * pos;
+    vertex_normal_cameraspace = V * M * vec4(normal, 0);
+    light_position_cameraspace = V * vec4(light.lightPosition_worldspace, 1);
+    vertex_UV = vertexUV;
+    vertex_position_lightspace = lightVP * M * pos;
+}

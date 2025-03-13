@@ -1,0 +1,142 @@
+#version 330 core
+
+// Interpolated values from the vertex shaders
+in vec4 vertex_position_cameraspace;
+in vec4 vertex_normal_cameraspace;
+in vec4 light_position_cameraspace;
+in vec2 vertex_UV;
+in vec4 vertex_position_lightspace;
+in float waveHeight;
+
+struct Light {
+    vec4 La;
+    vec4 Ld;
+    vec4 Ls;
+    vec3 lightPosition_worldspace;
+    float power;
+};
+uniform Light light;
+
+// Output data
+out vec4 color;
+
+// Uniforms
+uniform float waveTime;
+uniform sampler2D textureSampler;
+uniform sampler2D movingTextureSampler;
+uniform sampler2D displacementTextureSampler;
+uniform sampler2D foamTextureSampler;
+uniform sampler2D shadowMapSampler;
+uniform samplerCube skyboxTexture; // Skybox texture
+
+// Fresnel base reflectivity for water
+const vec3 F0 = vec3(0.005, 0.005, 0.005); // Base reflectivity for water
+
+// Foam parameters
+const float foamThreshold = 0.015;
+const float foamIntensity = 0.85;
+
+void phong(float visibility);
+float ShadowCalculation(vec4 fragPositionLightspace);
+vec3 fresnelSchlick(float cosTheta, vec3 F0);
+
+void main()
+{
+    vec2 movUV = vertex_UV + vec2(waveTime / 20, 0); // Animated texture
+
+    // Calculate shadowing
+    float shadow = ShadowCalculation(vertex_position_lightspace);
+    float visibility = 1.0f - shadow;
+
+    // Compute the Fresnel term using Schlick's approximation
+    vec3 V = normalize(-vertex_position_cameraspace.xyz); // View direction
+    vec3 N = normalize(vertex_normal_cameraspace.xyz);    // Normal direction
+    float cosTheta = clamp(dot(N, V), 0.0, 1.0);          // Cosine of the angle between the normal and view direction
+    vec3 fresnelTerm = fresnelSchlick(cosTheta, F0);      // Fresnel term
+
+    // Lighting calculations using Phong
+    phong(visibility);
+
+    // Sample the foam texture
+    vec4 foamColor = vec4(1,1,1,1);
+    //color =  vec4(vec3(visibility),1);
+    // Mix in foam texture if the height is above the foam threshold
+    if (waveHeight > foamThreshold) {
+        float foamFactor = clamp((waveHeight - foamThreshold) * foamIntensity, 0.0, 1.0);
+        color = mix(color, foamColor, foamFactor);
+    }
+
+    // Calculate reflection vector
+    vec3 reflectionVector = reflect(-V, N);
+
+    // Sample the skybox texture for reflections
+    vec3 reflectionColor = texture(skyboxTexture, reflectionVector).rgb;
+
+    // Combine Fresnel reflection with the base color
+   // color.rgb = mix(color.rgb, reflectionColor, fresnelTerm);
+    
+    color.rgb = mix(color.rgb, vec3(1.0), fresnelTerm);
+    //color = vec4(0,0.5,0.8,1); //for frame
+}
+
+float ShadowCalculation(vec4 fragPositionLightspace) {
+    vec3 projCoords = fragPositionLightspace.xyz / fragPositionLightspace.w;
+    projCoords = 0.5 * projCoords + 0.5;
+
+    float closestDepth = texture(shadowMapSampler, projCoords.xy).r;
+    float currentDepth = projCoords.z;
+    float shadow = currentDepth > closestDepth ? 1.0 : 0.0;
+
+    float bias = 0.005;
+    shadow = currentDepth - bias > closestDepth ? 1.0 : 0.0;
+
+    shadow = 0.0;
+    vec2 depthMap_dimensions = textureSize(shadowMapSampler, 0);
+    vec2 texelSize = 1.0 / depthMap_dimensions;
+    for (int x = -1; x <= 1; x++) {
+        for (int y = -1; y <= 1; y++) {
+            float pcfDepth = texture(shadowMapSampler, projCoords.xy + vec2(x, y) * texelSize).r;
+            shadow += currentDepth - bias > pcfDepth ? 1.0 : 0.0;
+        }
+    }
+    shadow /= 9.0;
+
+    if (projCoords.z > 1)
+        shadow = 0.0;
+
+    return shadow;
+}
+
+void phong(float visibility) {
+    vec4 moving_texture = vec4(texture(movingTextureSampler, vertex_UV).rgb, 0.25);
+    vec4 displacement_texture = vec4(texture(displacementTextureSampler, vertex_UV).rgb, 1.0);
+
+    vec4 Ks = vec4(0.02, 0.02, 0.02, 1.0);
+    vec4 Kd = moving_texture;
+    vec4 Ka = vec4(0.05 * Kd.rgb, Kd.a);
+    float Ns = 10;
+
+    // Ambient intensity
+    vec4 Ia = light.La * Ka;
+    color = Ia;
+
+    // Diffuse intensity
+    vec4 N = normalize(vertex_normal_cameraspace);
+    vec4 L = normalize(light_position_cameraspace - vertex_position_cameraspace);
+    float cosTheta = clamp(dot(N, L), 0, 1);
+    float smoothedDiffuse = smoothstep(0.0, 1.0, cosTheta);
+    vec4 Id = light.Ld * Kd * smoothedDiffuse;
+    color = Ia + Id;
+
+    // Specular intensity
+    vec4 R = reflect(-L, N);
+    vec4 E = normalize(-vertex_position_cameraspace);
+    float cosAlpha = clamp(dot(R, E), 0, 1);
+    float specular_factor = pow(cosAlpha, Ns);
+    vec4 Is = light.Ls * Ks * specular_factor;
+    color = Ia+Id * visibility+Is*visibility;
+}
+
+vec3 fresnelSchlick(float cosTheta, vec3 F0) {
+    return F0 + (1.0 - F0) * pow(1.0 - cosTheta, 5.0);
+}
