@@ -20,6 +20,7 @@ Lines mode:
 
 ![alt text](https://github.com/DimCharala/OpenGL-Waves-Simulation/blob/main/images/waveslines.gif)
 
+
 Full texture mode:
 
 ![alt text](https://github.com/DimCharala/OpenGL-Waves-Simulation/blob/main/images/waves.gif)
