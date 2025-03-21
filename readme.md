@@ -13,6 +13,15 @@ This project was created for the 'Computer Graphics and Virtual Reality' course 
 
 5. Locate the generated solution in the build folder and open it in Visual Studio.
 
-You can run the project from the lab.cpp file and the result will be similar to this.
+## Final result
+You can run the project from the lab.cpp file, and the output will look similar to this. 
+
+Lines mode:
+
+![alt text](https://github.com/DimCharala/OpenGL-Waves-Simulation/blob/main/images/waveslines.gif)
+
+Full texture mode:
 
 ![alt text](https://github.com/DimCharala/OpenGL-Waves-Simulation/blob/main/images/waves.gif)
+
+
